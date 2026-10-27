@@ -1,0 +1,6 @@
+node_modules/
+data/
+# Bun otomatis memuat .env, jangan sampai kredensial ikut ke-commit
+.env
+.env.*
+*.log
