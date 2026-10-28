@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notes CRUD</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header><strong>Notes CRUD</strong> <span class="hint hint-light">· PostgreSQL + Express</span></header>
+
+  <main>
+    <!-- USERS -->
+    <div>
+      <section>
+        <h2 id="user-form-title">Tambah User</h2>
+        <form id="user-form">
+          <input type="hidden" id="user-id">
+          <input id="user-name" placeholder="Nama" required>
+          <input id="user-email" type="email" placeholder="Email" required>
+          <div class="row">
+            <button type="submit">Simpan</button>
+            <button type="button" id="user-cancel" class="secondary" hidden>Batal</button>
+          </div>
+          <div class="err" id="user-err"></div>
+        </form>
+
+        <h2>Daftar User</h2>
+        <div class="row row-tight">
+          <input id="user-search" placeholder="Cari nama / email...">
+        </div>
+        <ul id="user-list"></ul>
+      </section>
+    </div>
+
+    <!-- NOTES -->
+    <div>
+      <section>
+        <h2 id="note-form-title">Tambah Note</h2>
+        <form id="note-form">
+          <input type="hidden" id="note-id">
+          <select id="note-user" required></select>
+          <input id="note-title" placeholder="Judul" required>
+          <input id="note-category" placeholder="Kategori (default: umum)" list="category-list">
+          <datalist id="category-list"></datalist>
+          <textarea id="note-content" placeholder="Isi catatan"></textarea>
+          <div class="row">
+            <button type="submit">Simpan</button>
+            <button type="button" id="note-cancel" class="secondary" hidden>Batal</button>
+          </div>
+          <div class="err" id="note-err"></div>
+        </form>
+
+        <h2>Daftar Note</h2>
+        <div class="row row-tight">
+          <input id="note-search" placeholder="Cari judul / isi...">
+          <select id="filter-user"><option value="">Semua user</option></select>
+          <select id="filter-category"><option value="">Semua kategori</option></select>
+        </div>
+        <p class="hint" id="note-count"></p>
+        <ul id="note-list"></ul>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

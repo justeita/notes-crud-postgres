@@ -108,6 +108,10 @@ export function createApp(pool) {
 
   app.use(express.json());
 
+  // pakai path absolut: express.static('public') itu relatif ke CWD, jadi kalau
+  // server dijalanin dari folder lain UI-nya 404 padahal API normal
+  app.use(express.static(path.join(__dirname, 'public')));
+
   // ---- users ----
   app.get('/api/users', async (req, res) => {
     const q = text(req.query.q, 100, 'q');
