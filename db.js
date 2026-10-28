@@ -30,6 +30,14 @@ CREATE INDEX IF NOT EXISTS notes_user_id_idx ON notes(user_id);
 CREATE INDEX IF NOT EXISTS notes_category_idx ON notes(category);
 `;
 
+// Index trigram buat kolom yang dicari pakai ILIKE '%kata%'. Pola yang diawali
+// wildcard nggak bisa pakai B-tree, jadi tanpa pg_trgm tiap pencarian = seq scan.
+const SCHEMA_TRGM_SQL = `
+CREATE INDEX IF NOT EXISTS users_name_trgm_idx    ON users USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS users_email_trgm_idx   ON users USING gin (email gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS notes_title_trgm_idx   ON notes USING gin (title gin_trgm_ops);
+`;
+
 export async function startDatabase({
   databaseDir = process.env.PG_DATA_DIR
     ? path.resolve(process.env.PG_DATA_DIR)
@@ -94,6 +102,15 @@ export async function startDatabase({
   }
 
   await pool.query(SCHEMA_SQL);
+
+  // best effort: kalau build postgres-nya nggak ada contrib pg_trgm, startup
+  // tetap lanjut. Pencarian masih bener, cuma lebih lambat.
+  try {
+    await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+    await pool.query(SCHEMA_TRGM_SQL);
+  } catch (err) {
+    log('pg_trgm tidak tersedia, pencarian tetap jalan tanpa index trigram:', err.message);
+  }
 
   return {
     pool,
