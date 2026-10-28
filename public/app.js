@@ -5,6 +5,18 @@ const esc = (s) =>
 let users = [];      // hasil pencarian, buat daftar
 let allUsers = [];   // semua user, buat dropdown (jangan ikut kefilter)
 
+// nunggu user berhenti ngetik, dan respons yang telat dibuang biar nggak
+// nimpa hasil pencarian yang lebih baru
+const debounce = (fn, ms = 250) => {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+};
+let seqUsers = 0;
+let seqNotes = 0;
+
 async function api(method, url, body) {
   const res = await fetch(url, {
     method,
@@ -19,13 +31,15 @@ async function api(method, url, body) {
 
 // ---------- USERS ----------
 async function loadUsers() {
+  const seq = ++seqUsers;
   let hasil;
   try {
     hasil = await api('GET', `/api/users?q=${encodeURIComponent($('user-search').value)}`);
   } catch (err) {
-    $('user-list').innerHTML = `<li class="hint">Gagal memuat user: ${esc(err.message)}</li>`;
+    if (seq === seqUsers) $('user-list').innerHTML = `<li class="hint">Gagal memuat user: ${esc(err.message)}</li>`;
     return;
   }
+  if (seq !== seqUsers) return; // ada request yang lebih baru
   users = hasil;
   $('user-list').innerHTML = users.length
     ? users.map((u) => `
@@ -101,7 +115,7 @@ $('user-form').onsubmit = async (e) => {
   }
 };
 $('user-cancel').onclick = resetUserForm;
-$('user-search').oninput = () => loadUsers();
+$('user-search').oninput = debounce(() => loadUsers());
 
 // ---------- NOTES ----------
 async function loadCategories() {
@@ -115,7 +129,7 @@ async function loadCategories() {
 }
 
 async function loadNotes() {
-  
+  const seq = ++seqNotes;
   const params = new URLSearchParams({
     q: $('note-search').value,
     user_id: $('filter-user').value,
@@ -125,9 +139,10 @@ async function loadNotes() {
   try {
     notes = await api('GET', `/api/notes?${params}`);
   } catch (err) {
-    $('note-list').innerHTML = `<li class="hint">Gagal memuat note: ${esc(err.message)}</li>`;
+    if (seq === seqNotes) $('note-list').innerHTML = `<li class="hint">Gagal memuat note: ${esc(err.message)}</li>`;
     return;
   }
+  if (seq !== seqNotes) return; // ada request yang lebih baru
   $('note-count').textContent = `${notes.length} note ditemukan`;
   $('note-list').innerHTML = notes.length
     ? notes.map((n) => `
@@ -197,7 +212,7 @@ $('note-form').onsubmit = async (e) => {
   }
 };
 $('note-cancel').onclick = resetNoteForm;
-$('note-search').oninput = () => loadNotes();
+$('note-search').oninput = debounce(() => loadNotes());
 $('filter-user').onchange = () => loadNotes();
 $('filter-category').onchange = () => loadNotes();
 
