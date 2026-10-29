@@ -36,6 +36,7 @@ const SCHEMA_TRGM_SQL = `
 CREATE INDEX IF NOT EXISTS users_name_trgm_idx    ON users USING gin (name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS users_email_trgm_idx   ON users USING gin (email gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS notes_title_trgm_idx   ON notes USING gin (title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS notes_content_trgm_idx ON notes USING gin (content gin_trgm_ops);
 `;
 
 export async function startDatabase({
