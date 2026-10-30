@@ -72,6 +72,8 @@ Catatan perilaku:
 | `PG_PORT` | `5433` | port Postgres |
 | `PG_PASSWORD` | `devpassword` | password user `postgres` |
 | `PG_DATA_DIR` | `data/db` | lokasi cluster |
+| `API_KEY` | _(kosong)_ | kalau diisi, request tulis wajib bawa key |
+| `RATE_LIMIT` | `600` | request `/api/*` per IP per menit, `0` = mati |
 
 Bun otomatis baca `.env` di root, jadi kredensial bisa ditaruh di situ:
 

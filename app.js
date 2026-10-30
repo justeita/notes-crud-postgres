@@ -1,46 +1,81 @@
 import express from 'express';
 import path from 'node:path';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const escapeLike = (s) => s.replace(/[\\%_]/g, (c) => '\\' + c);
 
-// id di skema ini SERIAL (int4). Di atas batas ini postgres balas 22003,
-// bukan "tidak ditemukan" - dulu jadinya 500.
-const MAX_INT4 = 2147483647;
-
-// Teks yang aman dilempar ke postgres. NUL byte ditolak postgres, dan lone
-// surrogate diam-diam jadi U+FFFD pas di-encode (data berubah tanpa kabar).
-const isValidText = (s) => !s.includes('\u0000') && s.isWellFormed();
-
-// Number() terlalu longgar: true -> 1, [1] -> 1, "1e0" -> 1, "0x10" -> 16.
-// Kalau dibiarkan, input salah tipe bisa diam-diam nulis ke user lain.
 const toId = (v) => {
-  const s = typeof v === 'number' ? String(v) : typeof v === 'string' ? v.trim() : null;
-  if (s === null || !/^[0-9]+$/.test(s)) return null;
-  const n = Number(s);
-  return Number.isSafeInteger(n) && n > 0 && n <= MAX_INT4 ? n : null;
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
 };
 
-// Batas panjang dihitung per grapheme, bukan per code unit: satu emoji = 1
-// karakter, sama kayak hitungan orang. Intl.Segmenter kalau ada, kalau nggak
-// ya jatuh ke code point.
-const segmenter =
-  typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
-    ? new Intl.Segmenter('id', { granularity: 'grapheme' })
-    : null;
-
-const countChars = (s) => {
-  if (!segmenter) return [...s].length;
-  let n = 0;
-  for (const _ of segmenter.segment(s)) n += 1;
-  return n;
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  // sengaja tanpa 'unsafe-inline', jadi style/script harus di file sendiri
+  // dan tombol pakai event delegation, bukan onclick="..."
+  'Content-Security-Policy':
+    "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; " +
+    "form-action 'self'; frame-ancestors 'none'",
 };
 
-// code unit selalu >= grapheme, jadi kalau panjang code unit masih di bawah
-// batas nggak usah dihitung yang mahal
-const tooLong = (s, max) => s.length > max && countChars(s) > max;
+// Rate limit per IP, disimpan di memori. Cuma cukup buat satu proses; kalau
+// dipasang di belakang reverse proxy, pembatasan yang beneran ya di proxy-nya.
+function createRateLimit({ max, windowMs = 60_000 }) {
+  // windowMs aneh (undefined / NaN / <= 0) bikin setInterval jalan delay 0,
+  // alias loop tanpa jeda. Jadi di-clamp.
+  const ms = Number.isFinite(windowMs) && windowMs > 0 ? windowMs : 60_000;
+  const hits = new Map();
+
+  const cleanup = setInterval(() => {
+    const batas = Date.now() - ms;
+    for (const [ip, e] of hits) if (e.start <= batas) hits.delete(ip);
+  }, Math.max(ms, 30_000));
+  cleanup.unref?.();
+
+  return (req, res, next) => {
+    if (!(max > 0)) return next(); // max 0 = rate limit dimatikan
+    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+    const now = Date.now();
+    let e = hits.get(ip);
+    if (!e || now - e.start >= ms) {
+      e = { start: now, count: 0 };
+      hits.set(ip, e);
+    }
+    e.count++;
+
+    const left = max - e.count;
+    res.set('X-RateLimit-Limit', String(max));
+    res.set('X-RateLimit-Remaining', String(Math.max(left, 0)));
+    if (left >= 0) return next();
+
+    res.set('Retry-After', String(Math.max(1, Math.ceil((e.start + ms - now) / 1000))));
+    return res.status(429).json({ error: 'Terlalu banyak permintaan, coba lagi nanti' });
+  };
+}
+
+// Dua sisi di-hash dulu baru dibandingin. Panjang digest selalu sama, jadi
+// panjang API key (atau panjang apa pun yang dikirim penyerang) nggak ikut
+// kelihatan dari waktu respons.
+const digest = (v) => createHash('sha256').update(String(v), 'utf8').digest();
+const sameKey = (a, b) => timingSafeEqual(digest(a), digest(b));
+
+function createApiKeyGuard(key) {
+  if (!key) return null; // API_KEY kosong = mode demo
+  return (req, res, next) => {
+    const fromHeader = req.get('x-api-key');
+    const fromBearer = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+    const given = fromHeader || fromBearer;
+    if (!given || !sameKey(given, key)) {
+      return res.status(401).json({ error: 'API key tidak valid' });
+    }
+    return next();
+  };
+}
 
 // Trim, tapi jangan dipotong diam-diam: kelebihan panjang ditolak 400, bukan
 // dipotong. Balikin { value } atau { error }.
@@ -48,8 +83,7 @@ const text = (v, max, label) => {
   if (v === undefined || v === null) return { value: '' };
   if (typeof v !== 'string') return { error: `${label} harus berupa teks` };
   const s = v.trim();
-  if (!isValidText(s)) return { error: `${label} mengandung karakter tidak valid` };
-  if (tooLong(s, max)) return { error: `${label} maksimal ${max} karakter` };
+  if (s.length > max) return { error: `${label} maksimal ${max} karakter` };
   return { value: s };
 };
 
@@ -64,7 +98,7 @@ const emailOf = (v) => {
   if (v === undefined || v === null) return { value: '' };
   if (typeof v !== 'string') return { error: 'email harus berupa teks' };
   const s = v.trim();
-  if (!s || tooLong(s, 200) || !isValidText(s)) return { error: 'email tidak valid' };
+  if (!s || s.length > 200) return { error: 'email tidak valid' };
   return EMAIL_RE.test(s) ? { value: s.toLowerCase() } : { error: 'email tidak valid' };
 };
 
@@ -81,6 +115,13 @@ function handleError(res, err) {
   console.error(err);
   return res.status(500).json({ error: 'Internal server error' });
 }
+
+// env angka yang kosong / bukan angka -> default, bukan NaN
+const numOr = (v, fallback) => {
+  if (v === undefined || v === null || v === '') return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
 
 const MAX_LIMIT = 500;
 
@@ -101,16 +142,35 @@ const optInt = (v, label, { min = 0, maks = MAX_LIMIT } = {}) => {
 /**
  * Bikin Express app di atas pool yang sudah jadi. Dipisah dari server.js
  * biar gampang dites tanpa harus dengerin port tetap.
+ * apiKey kosong = mode demo, rateLimit.max <= 0 = rate limit mati.
  */
-export function createApp(pool) {
+export function createApp(pool, { apiKey = process.env.API_KEY, rateLimit } = {}) {
   const app = express();
   app.disable('x-powered-by');
+
+  app.use((_req, res, next) => {
+    for (const [nama, nilai] of Object.entries(SECURITY_HEADERS)) res.set(nama, nilai);
+    next();
+  });
 
   app.use(express.json());
 
   // pakai path absolut: express.static('public') itu relatif ke CWD, jadi kalau
   // server dijalanin dari folder lain UI-nya 404 padahal API normal
   app.use(express.static(path.join(__dirname, 'public')));
+
+  app.use(
+    '/api',
+    createRateLimit(rateLimit ?? { max: numOr(process.env.RATE_LIMIT, 600), windowMs: 60_000 })
+  );
+
+  const guard = createApiKeyGuard(apiKey);
+  if (guard) {
+    // GET/HEAD tetap bebas, cuma perubahan data yang minta key
+    app.use('/api', (req, res, next) =>
+      req.method === 'GET' || req.method === 'HEAD' ? next() : guard(req, res, next)
+    );
+  }
 
   // ---- users ----
   app.get('/api/users', async (req, res) => {
