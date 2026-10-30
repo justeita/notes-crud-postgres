@@ -106,3 +106,8 @@ test('relasi one-to-many: note milik user + note_count', async () => {
   const list = (await api('GET', '/api/users')).data;
   expect(list.find((x) => x.id === u.id).note_count).toBe(1);
 });
+
+test('note dengan user_id tidak ada ditolak 400', async () => {
+  const { status } = await api('POST', '/api/notes', { user_id: 99999, title: 'yatim' });
+  expect(status).toBe(400);
+});
