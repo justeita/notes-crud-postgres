@@ -162,3 +162,61 @@ test('daftar kategori unik dan terurut', async () => {
   expect(data.filter((c) => c === kat).length).toBe(1); // DISTINCT
   expect([...data].sort()).toEqual(data); // ORDER BY
 });
+
+// pagination: limit/offset, urutan stabil, validasi
+
+test('limit/offset memotong daftar dan urutan tetap stabil', async () => {
+  const users = [
+    await buatUser('Paging A', emailUnik('paginga')),
+    await buatUser('Paging B', emailUnik('pagingb')),
+    await buatUser('Paging C', emailUnik('pagingc')),
+  ];
+  const kat = `page-${tokenUnik()}`;
+  for (const [i, u] of users.entries()) await buatNote(u.id, { title: `p${i}`, category: kat });
+
+  // tanpa limit: perilaku lama, semua baris
+  const semua = (await api('GET', `/api/notes?category=${kat}`)).data;
+  expect(semua.length).toBe(3);
+  expect((await api('GET', `/api/notes?category=${kat}&limit=`)).data.length).toBe(3); // '' = tanpa limit
+
+  // dua halaman kalau digabung = semua baris, tanpa duplikat
+  const hal1 = (await api('GET', `/api/notes?category=${kat}&limit=2`)).data;
+  const hal2 = (await api('GET', `/api/notes?category=${kat}&limit=2&offset=2`)).data;
+  expect(hal1.length).toBe(2);
+  expect(hal2.length).toBe(1);
+  const ids = (rows) => rows.map((n) => n.id).sort((a, b) => a - b);
+  expect(ids([...hal1, ...hal2])).toEqual(ids(semua));
+
+  // urutan sama antar request (tie-breaker id, bukan urutan acak)
+  expect((await api('GET', `/api/notes?category=${kat}`)).data.map((n) => n.id)).toEqual(
+    semua.map((n) => n.id)
+  );
+
+  // users juga mendukung limit/offset
+  expect((await api('GET', '/api/users?limit=1')).data.length).toBe(1);
+
+  // nilai aneh ditolak 400, bukan diabaikan diam-diam
+  for (const qs of ['limit=0', 'limit=abc', 'limit=-1', 'limit=501', 'limit=1.5', 'offset=-1', 'offset=abc']) {
+    expect((await api('GET', `/api/notes?${qs}`)).status).toBe(400);
+    expect((await api('GET', `/api/users?${qs}`)).status).toBe(400);
+  }
+});
+
+test('404 untuk id yang tidak ada', async () => {
+  expect((await api('GET', '/api/notes/999999')).status).toBe(404);
+  expect((await api('GET', '/api/users/999999')).status).toBe(404);
+  expect((await api('DELETE', '/api/notes/999999')).status).toBe(404);
+  expect((await api('DELETE', '/api/users/999999')).status).toBe(404);
+});
+
+test('hapus user, note-nya ikut kehapus', async () => {
+  const u = await buatUser('Hapus Saya');
+  await buatNote(u.id, { title: 'ikut hilang 1' });
+  await buatNote(u.id, { title: 'ikut hilang 2' });
+  expect((await api('GET', `/api/notes?user_id=${u.id}`)).data.length).toBe(2);
+
+  expect((await api('DELETE', `/api/users/${u.id}`)).status).toBe(204);
+
+  expect((await api('GET', `/api/notes?user_id=${u.id}`)).data.length).toBe(0);
+  expect((await api('GET', `/api/users/${u.id}`)).status).toBe(404);
+});
