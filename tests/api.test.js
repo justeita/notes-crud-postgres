@@ -111,3 +111,54 @@ test('note dengan user_id tidak ada ditolak 400', async () => {
   const { status } = await api('POST', '/api/notes', { user_id: 99999, title: 'yatim' });
   expect(status).toBe(400);
 });
+
+test('cari di judul dan isi, wildcard di-escape', async () => {
+  const u = await buatUser('Pencari');
+  const token = tokenUnik();
+
+  await buatNote(u.id, { title: `Belanja 100% fix_it ${token}`, content: 'agenda rapat' });
+  await buatNote(u.id, { title: `lain ${token}`, content: 'isi biasa' });
+
+  // cari di title dan di content, dibatasi user_id supaya tidak kena test lain
+  expect((await api('GET', `/api/notes?user_id=${u.id}&q=${token}`)).data.length).toBe(2);
+  expect((await api('GET', `/api/notes?user_id=${u.id}&q=agenda`)).data.length).toBe(1);
+
+  // '%' harus dicari sebagai karakter literal, bukan wildcard semua baris
+  const persen = await api('GET', `/api/notes?user_id=${u.id}&q=%25`);
+  expect(persen.data.length).toBe(1);
+  expect(persen.data[0].title).toContain('100%');
+
+  // '_' juga literal: 'a_b' tidak boleh ikut match 'axb'
+  const token2 = tokenUnik();
+  await buatNote(u.id, { title: `a_b ${token2}` });
+  await buatNote(u.id, { title: `axb ${token2}` });
+  const garisBawah = await api('GET', `/api/notes?user_id=${u.id}&q=${encodeURIComponent('a_b')}`);
+  expect(garisBawah.data.length).toBe(1);
+  expect(garisBawah.data[0].title).toContain('a_b');
+});
+
+test('filter kategori dan user', async () => {
+  const u = await buatUser('Filter');
+  const kat = `kat-${tokenUnik()}`;
+  await buatNote(u.id, { title: 'satu', category: kat });
+  await buatNote(u.id, { title: 'dua', category: 'lain' });
+
+  expect((await api('GET', `/api/notes?category=${kat}`)).data.length).toBe(1);
+  expect((await api('GET', `/api/notes?user_id=${u.id}`)).data.length).toBe(2);
+  expect((await api('GET', '/api/notes?user_id=abc')).status).toBe(400);
+  // user_id dikirim dua kali -> array, bukan angka -> 400
+  expect((await api('GET', `/api/notes?user_id=${u.id}&user_id=1`)).status).toBe(400);
+});
+
+test('daftar kategori unik dan terurut', async () => {
+  const u = await buatUser('Kategori');
+  const kat = `kat-${tokenUnik()}`;
+  await buatNote(u.id, { title: 'a', category: kat });
+  await buatNote(u.id, { title: 'b', category: kat });
+
+  const { status, data } = await api('GET', '/api/notes/categories');
+  expect(status).toBe(200);
+  expect(data).toContain(kat);
+  expect(data.filter((c) => c === kat).length).toBe(1); // DISTINCT
+  expect([...data].sort()).toEqual(data); // ORDER BY
+});
