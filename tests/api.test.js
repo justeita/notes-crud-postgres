@@ -220,3 +220,96 @@ test('hapus user, note-nya ikut kehapus', async () => {
   expect((await api('GET', `/api/notes?user_id=${u.id}`)).data.length).toBe(0);
   expect((await api('GET', `/api/users/${u.id}`)).status).toBe(404);
 });
+
+// header keamanan, rate limit, API key opsional
+const appDenganOpsi = async (opsi) => {
+  const app2 = createApp(db.pool, opsi);
+  const s = await new Promise((resolve) => {
+    const srv = app2.listen(0, () => resolve(srv));
+  });
+  return { server: s, base: `http://localhost:${s.address().port}` };
+};
+
+test('respons membawa header keamanan dan tanpa X-Powered-By', async () => {
+  const res = await fetch(base + '/api/users');
+  expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  expect(res.headers.get('x-frame-options')).toBe('DENY');
+  expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  expect(res.headers.get('content-security-policy')).toContain("default-src 'self'");
+  expect(res.headers.get('x-powered-by')).toBeNull();
+
+  // UI statis ikut kena header yang sama
+  const ui = await fetch(base + '/index.html');
+  expect(ui.headers.get('x-frame-options')).toBe('DENY');
+});
+
+test('rate limit per IP: 429 JSON + Retry-After setelah batas', async () => {
+  const { server: s2, base: b2 } = await appDenganOpsi({
+    apiKey: '',
+    rateLimit: { max: 2, windowMs: 60_000 },
+  });
+  try {
+    expect((await fetch(b2 + '/api/users')).status).toBe(200);
+    const kedua = await fetch(b2 + '/api/users');
+    expect(kedua.status).toBe(200);
+    expect(kedua.headers.get('x-ratelimit-remaining')).toBe('0');
+
+    const ketiga = await fetch(b2 + '/api/users');
+    expect(ketiga.status).toBe(429);
+    expect(ketiga.headers.get('retry-after')).toBeTruthy();
+    expect(ketiga.headers.get('content-type')).toContain('application/json');
+    expect((await ketiga.json()).error).toBeTruthy();
+  } finally {
+    s2.close();
+  }
+
+  // max <= 0 mematikan rate limit (dipakai kalau di belakang reverse proxy)
+  const { server: s3, base: b3 } = await appDenganOpsi({
+    apiKey: '',
+    rateLimit: { max: 0, windowMs: 60_000 },
+  });
+  try {
+    for (let i = 0; i < 5; i++) expect((await fetch(b3 + '/api/users')).status).toBe(200);
+  } finally {
+    s3.close();
+  }
+});
+
+// windowMs nggak dikirim jangan bikin interval 0ms (loop tanpa jeda)
+test('rate limit tanpa windowMs tetap jalan (default 60 detik)', async () => {
+  const { server: s, base: b } = await appDenganOpsi({ apiKey: '', rateLimit: { max: 2 } });
+  try {
+    expect((await fetch(b + '/api/users')).status).toBe(200);
+    expect((await fetch(b + '/api/users')).status).toBe(200);
+    const ketiga = await fetch(b + '/api/users');
+    expect(ketiga.status).toBe(429);
+    expect(ketiga.headers.get('retry-after')).toBeTruthy();
+    const retry = Number(ketiga.headers.get('retry-after'));
+    expect(retry).toBeGreaterThan(0);
+    expect(retry).toBeLessThanOrEqual(60);
+  } finally {
+    s.close();
+  }
+});
+
+test('API_KEY kalau diset: tulis wajib header, baca tetap bebas', async () => {
+  const { server: s2, base: b2 } = await appDenganOpsi({
+    apiKey: 'rahasia123',
+    rateLimit: { max: 0, windowMs: 60_000 },
+  });
+  const kirim = (headers = {}) =>
+    fetch(b2 + '/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ name: 'Kunci', email: emailUnik('kunci') }),
+    });
+  try {
+    expect((await fetch(b2 + '/api/users')).status).toBe(200); // GET tanpa key tetap boleh
+    expect((await kirim()).status).toBe(401);
+    expect((await kirim({ Authorization: 'Bearer salah' })).status).toBe(401);
+    expect((await kirim({ 'x-api-key': 'rahasia123' })).status).toBe(201);
+    expect((await kirim({ Authorization: 'Bearer rahasia123' })).status).toBe(201);
+  } finally {
+    s2.close();
+  }
+});
