@@ -23,6 +23,15 @@ Buka http://localhost:3000. Kalau mau auto-reload pas ngoding:
 bun run dev
 ```
 
+Test:
+
+```bash
+bun run test
+```
+
+Test pakai cluster sendiri di `data/test-db` dengan port acak, jadi nggak
+bentrok sama server dev (5433) dan nggak ngotorin data development.
+
 ## Skema
 
 ```
