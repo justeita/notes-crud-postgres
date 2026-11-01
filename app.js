@@ -8,8 +8,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const escapeLike = (s) => s.replace(/[\\%_]/g, (c) => '\\' + c);
 
 const toId = (v) => {
-  const n = Number(v);
-  return Number.isInteger(n) && n > 0 ? n : null;
+  const s = typeof v === 'number' ? String(v) : typeof v === 'string' ? v.trim() : null;
+  if (s === null || !/^[0-9]+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 };
 
 const SECURITY_HEADERS = {
@@ -382,29 +384,52 @@ export function createApp(pool, { apiKey = process.env.API_KEY, rateLimit } = {}
     const id = toId(req.params.id);
     if (!id) return res.status(400).json({ error: 'ID tidak valid' });
     const body = bodyOf(req);
-    const title = text(body.title, 200, 'title');
-    const content = text(body.content, 10000, 'content');
-    const category = text(body.category, 50, 'category');
-    const userId = toId(body.user_id);
-    if (title.error || content.error || category.error) {
-      return res.status(400).json({ error: title.error || content.error || category.error });
+
+    // Dulu semua field dibersihin tiap PUT, jadi PUT {"title": "..."} ikut
+    // ngehapus content dan balikin category ke 'umum'. Sekarang parsial.
+    let title = null;
+    let content = null;
+    let category = null;
+    let userId = null;
+
+    if (has(body, 'title')) {
+      const r = text(body.title, 200, 'title');
+      if (r.error) return res.status(400).json({ error: r.error });
+      if (!r.value) return res.status(400).json({ error: 'title wajib diisi' });
+      title = r.value;
     }
-    if (!title.value) return res.status(400).json({ error: 'title wajib diisi' });
-    if (!userId) return res.status(400).json({ error: 'user_id wajib diisi' });
+    if (has(body, 'content')) {
+      const r = text(body.content, 10000, 'content');
+      if (r.error) return res.status(400).json({ error: r.error });
+      content = r.value; // '' sah, artinya isi note dikosongin
+    }
+    if (has(body, 'category')) {
+      const r = text(body.category, 50, 'category');
+      if (r.error) return res.status(400).json({ error: r.error });
+      category = r.value || 'umum';
+    }
+    if (has(body, 'user_id')) {
+      userId = toId(body.user_id);
+      if (!userId) return res.status(400).json({ error: 'user_id tidak valid' });
+    }
+    if (title === null && content === null && category === null && userId === null) {
+      return res.status(400).json({ error: 'tidak ada field yang diubah' });
+    }
+
     try {
       const { rows } = await pool.query(
         `WITH upd AS (
            UPDATE notes
-              SET title      = $1,
-                  content    = $2,
-                  category   = $3,
-                  user_id    = $4,
+              SET title      = COALESCE($1, title),
+                  content    = COALESCE($2, content),
+                  category   = COALESCE($3, category),
+                  user_id    = COALESCE($4::int, user_id),
                   updated_at = now()
             WHERE id = $5 RETURNING *
          )
          SELECT upd.*, u.name AS user_name, u.email AS user_email
            FROM upd JOIN users u ON u.id = upd.user_id`,
-        [title.value, content.value, category.value || 'umum', userId, id]
+        [title, content, category, userId, id]
       );
       if (!rows[0]) return res.status(404).json({ error: 'Note tidak ditemukan' });
       res.json(rows[0]);
