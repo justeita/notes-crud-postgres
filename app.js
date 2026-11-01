@@ -7,13 +7,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const escapeLike = (s) => s.replace(/[\\%_]/g, (c) => '\\' + c);
 
-const toId = (v) => {
-  const s = typeof v === 'number' ? String(v) : typeof v === 'string' ? v.trim() : null;
-  if (s === null || !/^[0-9]+$/.test(s)) return null;
-  const n = Number(s);
-  return Number.isSafeInteger(n) && n > 0 ? n : null;
-};
-
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -79,13 +72,50 @@ function createApiKeyGuard(key) {
   };
 }
 
+// id di skema ini SERIAL (int4). Di atas batas ini postgres balas 22003,
+// bukan "tidak ditemukan" - dulu jadinya 500.
+const MAX_INT4 = 2147483647;
+
+// Teks yang aman dilempar ke postgres. NUL byte ditolak postgres, dan lone
+// surrogate diam-diam jadi U+FFFD pas di-encode (data berubah tanpa kabar).
+const isValidText = (s) => !s.includes('\u0000') && s.isWellFormed();
+
+// Number() terlalu longgar: true -> 1, [1] -> 1, "1e0" -> 1, "0x10" -> 16.
+// Kalau dibiarkan, input salah tipe bisa diam-diam nulis ke user lain.
+const toId = (v) => {
+  const s = typeof v === 'number' ? String(v) : typeof v === 'string' ? v.trim() : null;
+  if (s === null || !/^[0-9]+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) && n > 0 && n <= MAX_INT4 ? n : null;
+};
+
+// Batas panjang dihitung per grapheme, bukan per code unit: satu emoji = 1
+// karakter, sama kayak hitungan orang. Intl.Segmenter kalau ada, kalau nggak
+// ya jatuh ke code point.
+const segmenter =
+  typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter('id', { granularity: 'grapheme' })
+    : null;
+
+const countChars = (s) => {
+  if (!segmenter) return [...s].length;
+  let n = 0;
+  for (const _ of segmenter.segment(s)) n += 1;
+  return n;
+};
+
+// code unit selalu >= grapheme, jadi kalau panjang code unit masih di bawah
+// batas nggak usah dihitung yang mahal
+const tooLong = (s, max) => s.length > max && countChars(s) > max;
+
 // Trim, tapi jangan dipotong diam-diam: kelebihan panjang ditolak 400, bukan
 // dipotong. Balikin { value } atau { error }.
 const text = (v, max, label) => {
   if (v === undefined || v === null) return { value: '' };
   if (typeof v !== 'string') return { error: `${label} harus berupa teks` };
   const s = v.trim();
-  if (s.length > max) return { error: `${label} maksimal ${max} karakter` };
+  if (!isValidText(s)) return { error: `${label} mengandung karakter tidak valid` };
+  if (tooLong(s, max)) return { error: `${label} maksimal ${max} karakter` };
   return { value: s };
 };
 
@@ -100,7 +130,7 @@ const emailOf = (v) => {
   if (v === undefined || v === null) return { value: '' };
   if (typeof v !== 'string') return { error: 'email harus berupa teks' };
   const s = v.trim();
-  if (!s || s.length > 200) return { error: 'email tidak valid' };
+  if (!s || tooLong(s, 200) || !isValidText(s)) return { error: 'email tidak valid' };
   return EMAIL_RE.test(s) ? { value: s.toLowerCase() } : { error: 'email tidak valid' };
 };
 
