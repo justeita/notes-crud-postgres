@@ -51,9 +51,16 @@ export async function startDatabase({
 } = {}) {
   const log = verbose ? console.log : () => {};
 
+  // Nyimpen beberapa baris log terakhir postgres. Kalau start-nya gagal,
+  // embedded-postgres nolak promise-nya dengan `undefined` (tanpa pesan apa pun),
+  // jadi log ini satu-satunya petunjuk kenapa.
+  const tail = [];
   const onLog = (line) => {
     const msg = String(line).trim();
-    if (msg && verbose) console.log('[postgres]', msg);
+    if (!msg) return;
+    tail.push(msg);
+    if (tail.length > 20) tail.shift();
+    if (verbose) console.log('[postgres]', msg);
   };
 
   const server = new EmbeddedPostgres({
@@ -73,7 +80,17 @@ export async function startDatabase({
     await server.initialise();
   }
 
-  await server.start();
+  try {
+    await server.start();
+  } catch {
+    // lemparannya `undefined` (lihat catatan di atas), jadi bikin pesan sendiri
+    const detail = tail.length ? `\n${tail.join('\n')}` : '';
+    throw new Error(
+      `Gagal menjalankan PostgreSQL di port ${port} (data dir: ${databaseDir}). ` +
+        'Port mungkin sudah dipakai instance lain, atau data dir masih dikunci proses ' +
+        `postgres yang belum mati (cek: ss -ltnp | grep ${port}).${detail}`
+    );
+  }
 
   // nama database nggak bisa diparameterisasi di DDL, jadi divalidasi dulu
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(database)) {
@@ -89,28 +106,36 @@ export async function startDatabase({
     console.error('[pg pool] idle client error:', err.message);
   });
 
-  const admin = server.getPgClient('postgres');
+  // Dari sini cluster udah hidup. Kalau langkah berikutnya gagal, matiin lagi
+  // biar port-nya nggak dikunci proses postgres yatim.
   try {
-    await admin.connect();
-    const exists = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [database]);
-    if (exists.rowCount === 0) {
-      await admin.query(`CREATE DATABASE "${database}"`);
+    const admin = server.getPgClient('postgres');
+    try {
+      await admin.connect();
+      const exists = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [database]);
+      if (exists.rowCount === 0) {
+        await admin.query(`CREATE DATABASE "${database}"`);
+      }
+    } finally {
+      // tanpa finally, client admin bocor (postgres-nya juga ikut hidup) kalau
+      // CREATE DATABASE gagal
+      await admin.end().catch(() => {});
     }
-  } finally {
-    // tanpa finally, client admin bocor (postgres-nya juga ikut hidup) kalau
-    // CREATE DATABASE gagal
-    await admin.end().catch(() => {});
-  }
 
-  await pool.query(SCHEMA_SQL);
+    await pool.query(SCHEMA_SQL);
 
-  // best effort: kalau build postgres-nya nggak ada contrib pg_trgm, startup
-  // tetap lanjut. Pencarian masih bener, cuma lebih lambat.
-  try {
-    await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
-    await pool.query(SCHEMA_TRGM_SQL);
+    // best effort: kalau build postgres-nya nggak ada contrib pg_trgm, startup
+    // tetap lanjut. Pencarian masih bener, cuma lebih lambat.
+    try {
+      await pool.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
+      await pool.query(SCHEMA_TRGM_SQL);
+    } catch (err) {
+      log('pg_trgm tidak tersedia, pencarian tetap jalan tanpa index trigram:', err.message);
+    }
   } catch (err) {
-    log('pg_trgm tidak tersedia, pencarian tetap jalan tanpa index trigram:', err.message);
+    await pool.end().catch(() => {});
+    await server.stop().catch(() => {});
+    throw err;
   }
 
   return {
