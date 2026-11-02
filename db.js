@@ -76,7 +76,7 @@ export async function startDatabase({
 
   // init cluster cuma sekali, pas datadir-nya belum ada
   if (!fs.existsSync(path.join(databaseDir, 'PG_VERSION'))) {
-    log('Inisialisasi klaster PostgreSQL baru...');
+    log('Inisialisasi cluster PostgreSQL baru...');
     await server.initialise();
   }
 
